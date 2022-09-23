@@ -1,0 +1,55 @@
+#Installing and loading the Tidyverse package for data-wrangling 
+install.packages("tidyverse")
+library(tidyverse)
+
+#reading the CSV file directly through URL
+coal <- read_csv('http://594442.youcanlearnit.net/coal.csv', skip=2)
+glimpse(coal)
+
+#renaming the first column as Region
+colnames(coal)[1] <- 'region'
+summary(coal)
+
+#changin the data format from wider to longer format
+coal_longer <- pivot_longer(coal, !region, names_to='year', values_to='coal_consumption')
+glimpse(coal_longer)
+
+
+#changing the data types
+coal_long <- coal_longer %>%
+  mutate(year=as.integer(year))
+summary(coal_long)
+
+coal_long <- coal_long %>%
+  mutate(coal_consumption=as.numeric(coal_consumption))
+summary(coal_long)
+
+unique(coal_long$region)
+
+
+#creating a vector of non-countries i.e continents
+non_countries <- c('North America', 'Central & South America', 'Antartica', 'Europe', 'Eurasia', 'Middle East', 'Africa', 'Asia & Oceania', 'World')
+
+
+#crating a tibble containing continent values
+coal_region <- coal_long %>%
+  filter(region %in% non_countries)
+
+
+#creating a tibble of country values
+coal_country <- coal_long %>%
+  filter(!(region %in% non_countries))
+
+
+#checking the created tibbles
+unique(coal_region$region)
+unique(coal_country$region)
+
+
+#After getting the tidydata we then move towards visualizations
+#creating visualizations in R
+ggplot(data=coal_region, mapping=aes(x=year, y=coal_consumption))+
+    geom_line(mapping=aes(color=region))
+
+
+
