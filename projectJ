@@ -1,0 +1,182 @@
+# Accelerating Hiring with AI: Data-Driven Hiring Analysis in R (Compatible with R 4.2.1)
+
+# Load necessary packages
+if (!requireNamespace("tidyverse", quietly = TRUE)) install.packages("tidyverse")
+if (!requireNamespace("xgboost", quietly = TRUE)) install.packages("xgboost")
+if (!requireNamespace("Matrix", quietly = TRUE)) install.packages("Matrix")
+if (!requireNamespace("gridExtra", quietly = TRUE)) install.packages("gridExtra")
+if (!requireNamespace("rpart", quietly = TRUE)) install.packages("rpart")
+if (!requireNamespace("rpart.plot", quietly = TRUE)) install.packages("rpart.plot")
+if (!requireNamespace("ROCR", quietly = TRUE)) install.packages("ROCR")
+
+library(tidyverse)
+library(xgboost)
+library(Matrix)
+library(gridExtra)
+library(rpart)
+library(rpart.plot)
+library(ROCR)
+
+# Load dataset from web
+data_url <- "https://raw.githubusercontent.com/ShuklaPrashant21/Campus_Recruitment/master/Placement_Data_Full_Class.csv"
+data <- read.csv(data_url)
+
+# Clean column names
+data <- data %>%
+  rename_with(~ tolower(gsub(" ", "_", .x)))
+
+# Convert categorical columns to factors
+cat_cols <- intersect(c("gender", "ssc_b", "hsc_b", "hsc_s", "degree_t", "workex", "specialisation", "status"), colnames(data))
+data <- data %>% mutate(across(all_of(cat_cols), as.factor))
+
+# Quick structure & summary
+str(data)
+summary(data)
+
+# --- Exploratory Data Analysis ---
+
+# Bar plots for categorical vars
+plot_cat <- function(var) {
+  p <- ggplot(data, aes_string(x = var, fill = "status")) +
+    geom_bar(position = "dodge") +
+    theme_minimal() +
+    ggtitle(paste("Placement by", var))
+  print(p)  # ensure plots show up
+}
+cat_vars <- setdiff(cat_cols, "status")
+lapply(cat_vars, plot_cat)
+
+# Histograms for numeric vars
+num_vars <- intersect(c("ssc_p", "hsc_p", "degree_p", "etest_p", "mba_p"), colnames(data))
+for (var in num_vars) {
+  p <- ggplot(data, aes_string(x = var, fill = "status")) +
+    geom_histogram(alpha = 0.6, bins = 30, position = "identity") +
+    theme_minimal() +
+    ggtitle(paste("Distribution of", var))
+  print(p)  # ensure plots show up
+}
+
+# Correlation matrix heatmap (base R)
+num_data <- data %>% select(where(is.numeric))
+cor_matrix <- cor(num_data, use = "complete.obs")
+print(round(cor_matrix, 2))
+heatmap(cor_matrix, main = "Correlation Matrix Heatmap", symm = TRUE)
+
+# Pair plot (base R)
+pair_vars <- c(num_vars, "status")
+pair_vars <- intersect(pair_vars, colnames(data))
+pairs(data[, pair_vars], col = as.numeric(data$status) + 1, main = "Pair Plot with Status")
+
+# --- Prepare data for modeling ---
+
+model_data <- data %>%
+  select(c("status", cat_vars, num_vars)) %>%
+  drop_na()
+
+# Encode target variable as numeric (0,1)
+levels(model_data$status) <- c(0, 1)
+
+# Split 80/20
+set.seed(123)
+train_index <- sample(1:nrow(model_data), size = 0.8 * nrow(model_data))
+train <- model_data[train_index, ]
+test <- model_data[-train_index, ]
+
+# --- Logistic Regression ---
+
+model_log <- glm(status ~ ., data = train, family = binomial)
+summary(model_log)
+
+log_pred_prob <- predict(model_log, test, type = "response")
+log_pred_class <- factor(ifelse(log_pred_prob > 0.5, 1, 0), levels = c(0, 1))
+
+confusion_matrix <- function(true, pred) {
+  table(True = true, Predicted = pred)
+}
+
+conf_log <- confusion_matrix(test$status, log_pred_class)
+print(conf_log)
+
+acc_log <- sum(diag(conf_log)) / sum(conf_log)
+cat("Logistic Regression Accuracy:", round(acc_log, 3), "\n")
+
+# --- Decision Tree ---
+
+model_dt <- rpart(status ~ ., data = train, method = "class")
+rpart.plot(model_dt)
+
+dt_pred_class <- predict(model_dt, test, type = "class")
+conf_dt <- confusion_matrix(test$status, dt_pred_class)
+print(conf_dt)
+
+acc_dt <- sum(diag(conf_dt)) / sum(conf_dt)
+cat("Decision Tree Accuracy:", round(acc_dt, 3), "\n")
+
+# --- XGBoost ---
+
+train_x <- model.matrix(status ~ . -1, data = train)
+test_x <- model.matrix(status ~ . -1, data = test)
+train_y <- as.numeric(as.character(train$status))
+test_y <- as.numeric(as.character(test$status))
+
+dtrain <- xgb.DMatrix(data = train_x, label = train_y)
+dtest <- xgb.DMatrix(data = test_x, label = test_y)
+
+params <- list(objective = "binary:logistic", eval_metric = "auc", max_depth = 4, eta = 0.1)
+model_xgb <- xgb.train(params = params, data = dtrain, nrounds = 100)
+
+xgb_pred_prob <- predict(model_xgb, dtest)
+xgb_pred_class <- factor(ifelse(xgb_pred_prob > 0.5, 1, 0), levels = c(0, 1))
+
+conf_xgb <- confusion_matrix(test$status, xgb_pred_class)
+print(conf_xgb)
+
+acc_xgb <- sum(diag(conf_xgb)) / sum(conf_xgb)
+cat("XGBoost Accuracy:", round(acc_xgb, 3), "\n")
+
+# --- ROC Curves with ROCR ---
+
+pred_log <- prediction(log_pred_prob, test_y)
+perf_log <- performance(pred_log, "tpr", "fpr")
+
+dt_pred_prob <- predict(model_dt, test, type = "prob")[, 2]
+pred_dt <- prediction(dt_pred_prob, test_y)
+perf_dt <- performance(pred_dt, "tpr", "fpr")
+
+pred_xgb <- prediction(xgb_pred_prob, test_y)
+perf_xgb <- performance(pred_xgb, "tpr", "fpr")
+
+plot(perf_log, col = "green", lwd = 2, main = "ROC Curves Comparison")
+lines(perf_dt, col = "blue", lwd = 2)
+lines(perf_xgb, col = "red", lwd = 2)
+legend("bottomright", legend = c("Logistic Regression", "Decision Tree", "XGBoost"),
+       col = c("green", "blue", "red"), lwd = 2)
+
+# --- Manual 5-fold CV for Decision Tree ---
+
+set.seed(123)
+folds <- sample(rep(1:5, length.out = nrow(train)))
+cv_acc <- numeric(5)
+
+for (k in 1:5) {
+  train_cv <- train[folds != k, ]
+  val_cv <- train[folds == k, ]
+  
+  dt_cv <- rpart(status ~ ., data = train_cv, method = "class")
+  pred_cv <- predict(dt_cv, val_cv, type = "class")
+  conf_cv <- confusion_matrix(val_cv$status, pred_cv)
+  acc_cv <- sum(diag(conf_cv)) / sum(conf_cv)
+  cv_acc[k] <- acc_cv
+}
+
+cat("Decision Tree 5-fold CV Accuracy:", round(mean(cv_acc), 3), "\n")
+
+# --- Summary ---
+
+cat("\nModel Performance Summary:\n")
+cat("Logistic Regression Accuracy:", round(acc_log, 3), "\n")
+cat("Decision Tree Accuracy:", round(acc_dt, 3), "\n")
+cat("Decision Tree 5-fold CV Accuracy:", round(mean(cv_acc), 3), "\n")
+cat("XGBoost Accuracy:", round(acc_xgb, 3), "\n")
+
+# --- End ---
